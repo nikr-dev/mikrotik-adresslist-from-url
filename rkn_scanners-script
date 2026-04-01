@@ -1,0 +1,117 @@
+# ========== SETTINGS ==========
+:local listName "rkn_scanners"
+
+
+:local urlList ({})
+
+# URL LISTs
+
+:set urlList ($urlList, "https://raw.githubusercontent.com/tread-lightly/CyberOK_Skipa_ips/refs/heads/main/lists/skipa_cidr.txt")
+#example#:set urlList ($urlList, "https://raw.githubusercontent.com/C24Be/AS_Network_List/refs/heads/main/blacklists/blacklist-v4.txt")
+
+# REPLACE usb1/tmp to your folder, WITHOUT starting "/"
+:local tempDir "usb1/tmp/"
+:local commentText ""
+# ===============================
+
+:log info "Starting RKN lists update"
+
+:local fileList ({})
+:local idx 0
+
+# ===== Downloading =====
+:foreach url in=$urlList do={
+
+    :local fileName ($tempDir . "rkn_list_" . $idx . ".txt")
+
+    :log info ("Downloading: " . $url)
+
+    :do {
+        /tool fetch url=$url mode=https dst-path=$fileName
+        :delay 2s
+
+        :if ([:len [/file find name=$fileName]] > 0) do={
+            :set fileList ($fileList , $fileName)
+        } else={
+            :log error ("Failed download: " . $url)
+        }
+    } on-error={
+        :log error ("Fetch error: " . $url)
+    }
+
+    :set idx ($idx + 1)
+}
+
+# ===== Check if download success =====
+:if ([:len $fileList] = 0) do={
+    :log error "No files downloaded. Abort."
+    :return
+}
+
+:log info ("Downloaded files: " . [:len $fileList])
+
+# ===== Clean address list =====
+/ip firewall address-list remove [find list=$listName]
+
+:local totalAdded 0
+
+# ===== Import =====
+:foreach fileName in=$fileList do={
+
+    :local content [/file get $fileName contents]
+    :local start 0
+    :local added 0
+
+    :for i from=0 to=([:len $content] - 1) do={
+
+        :local char [:pick $content $i]
+
+        :if ($char = "\n") do={
+
+            :local line [:pick $content $start $i]
+            :set start ($i + 1)
+
+            :if ([:len $line] > 0) do={
+
+                # remove \r (Windows-style new line)
+                :if ([:pick $line ([:len $line] - 1)] = "\r") do={
+                    :set line [:pick $line 0 ([:len $line] - 1)]
+                }
+
+                # ignore comments
+                :if ([:pick $line 0] != "#") do={
+                    :do {
+                        /ip firewall address-list add list=$listName address=$line comment=$commentText
+                        :set added ($added + 1)
+                    } on-error={}
+                }
+            }
+        }
+    }
+
+    :local line [:pick $content $start [:len $content]]
+
+    :if ([:len $line] > 0) do={
+
+        :if ([:pick $line ([:len $line] - 1)] = "\r") do={
+            :set line [:pick $line 0 ([:len $line] - 1)]
+        }
+
+        :if ([:pick $line 0] != "#") do={
+            :do {
+                /ip firewall address-list add list=$listName address=$line comment=$commentText
+                :set added ($added + 1)
+            } on-error={}
+        }
+    }
+
+    :set totalAdded ($totalAdded + $added)
+
+    # remove files
+    :do { /file remove $fileName } on-error={}
+}
+
+# ===== Total =====
+:local totalCount [/ip firewall address-list print count-only where list=$listName]
+
+:log info ("RKN update completed. Added: " . $totalAdded . ", total unique: " . $totalCount)
